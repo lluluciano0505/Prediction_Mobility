@@ -2,6 +2,9 @@
 
 This repository provides a practical baseline pipeline for the HuMob Challenge 2026 dataset.
 
+Implementation architecture and delivery plan:
+- See `ARCHITECTURE.md`
+
 ## Scope
 
 - Task: Predict aggregated origin-destination mobility flow volumes.
@@ -38,6 +41,16 @@ The script assumes a tab-separated file and attempts to infer key columns. It lo
 
 If your column names differ, pass explicit names through CLI arguments.
 
+Optional news input (for past-news features):
+
+- Provide a second CSV/TSV file with at least:
+  - News date column (for example: date, published_at)
+  - And one of:
+    - Text/title column (for example: text, headline, title)
+    - Numeric score column (for example: sentiment, score)
+
+The pipeline aggregates news by day and creates lagged news features (lag-1, lag-3 mean, lag-7 mean), so only past news information is used.
+
 ## Quick Start
 
 1) Create environment and install dependencies
@@ -68,12 +81,35 @@ python -m src.humob_baseline \
   --out-dir outputs
 ```
 
+4) Run with news-enhanced features
+
+```bash
+python -m src.humob_baseline \
+  --data-path /path/to/humob2026-dataset.tsv \
+  --news-path /path/to/news.csv \
+  --out-dir outputs
+```
+
+5) Run with explicit news columns
+
+```bash
+python -m src.humob_baseline \
+  --data-path /path/to/humob2026-dataset.tsv \
+  --news-path /path/to/news.tsv \
+  --news-date-col published_at \
+  --news-text-col headline \
+  --news-score-col sentiment \
+  --out-dir outputs
+```
+
 ## Outputs
 
 The pipeline writes:
 
 - outputs/metrics.json: Validation MAE and RMSE
 - outputs/validation_predictions.csv: Per-row predictions on validation split
+
+`metrics.json` also reports whether news features were used.
 
 ## Baseline Method
 
@@ -83,3 +119,22 @@ The pipeline writes:
 - Train a tree-based regressor (RandomForestRegressor).
 
 This baseline is intentionally simple and is meant as a starting point.
+
+## Geography Embedding Recommendation
+
+For this project, `srai` is the best fit among open-source options.
+
+- Why it fits: `srai` is strong at turning spatial units (for example, grid cells or H3 cells) into vector embeddings, which matches OD flow forecasting well.
+- How to use it here: map both origin and destination grid IDs to embeddings, then combine those embeddings with temporal lag features in the prediction model.
+
+Practical integration path:
+
+1) Keep the current lag/time baseline as a stable benchmark.
+2) Add origin and destination embedding features.
+3) Concatenate embedding features with current lag/calendar features.
+4) Retrain and compare MAE/RMSE against the baseline.
+
+Chinese summary:
+
+- srai 适配度最高。它擅长把空间单元（如网格/H3）做成向量表示，和 OD 流量预测任务最接近。
+- 可将 origin/destination 的网格 ID 映射成 embedding，再与时间滞后特征一起输入模型。

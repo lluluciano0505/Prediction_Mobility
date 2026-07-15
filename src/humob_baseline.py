@@ -12,6 +12,9 @@ DEFAULT_DATE_CANDIDATES = ["date", "day", "dt"]
 DEFAULT_ORIGIN_CANDIDATES = ["origin", "o", "origin_id", "from_id"]
 DEFAULT_DEST_CANDIDATES = ["destination", "d", "destination_id", "to_id"]
 DEFAULT_TARGET_CANDIDATES = ["flow", "trip_count", "count", "y"]
+DEFAULT_NEWS_DATE_CANDIDATES = ["date", "day", "dt", "published_at", "publish_date", "timestamp", "time"]
+DEFAULT_NEWS_TEXT_CANDIDATES = ["text", "content", "title", "headline", "news"]
+DEFAULT_NEWS_SCORE_CANDIDATES = ["sentiment", "score", "impact", "news_score"]
 
 
 def pick_column(df: pd.DataFrame, explicit_name: str | None, candidates: list[str], label: str) -> str:
@@ -69,6 +72,87 @@ def split_train_valid(df: pd.DataFrame, date_col: str) -> tuple[pd.DataFrame, pd
     return train_df, valid_df
 
 
+def load_news_daily_features(
+    news_path: Path,
+    news_date_col: str | None,
+    news_text_col: str | None,
+    news_score_col: str | None,
+) -> pd.DataFrame:
+    if not news_path.exists():
+        raise ValueError(f"News file not found: {news_path}")
+
+    # Auto-detect delimiter so CSV/TSV both work.
+    news_df = pd.read_csv(news_path, sep=None, engine="python")
+
+    date_col = pick_column(news_df, news_date_col, DEFAULT_NEWS_DATE_CANDIDATES, "news-date")
+
+    text_col: str | None = None
+    score_col: str | None = None
+
+    try:
+        text_col = pick_column(news_df, news_text_col, DEFAULT_NEWS_TEXT_CANDIDATES, "news-text")
+    except ValueError:
+        text_col = None
+
+    try:
+        score_col = pick_column(news_df, news_score_col, DEFAULT_NEWS_SCORE_CANDIDATES, "news-score")
+    except ValueError:
+        score_col = None
+
+    if text_col is None and score_col is None:
+        raise ValueError(
+            "Could not infer news text/score columns. Provide --news-text-col and/or --news-score-col."
+        )
+
+    news_df[date_col] = pd.to_datetime(news_df[date_col], errors="coerce")
+    if news_df[date_col].isna().all():
+        raise ValueError("News date parsing failed for all rows. Check --news-date-col and date format.")
+
+    news_df = news_df.dropna(subset=[date_col]).copy()
+    news_df["news_date"] = news_df[date_col].dt.normalize()
+
+    agg_spec: dict[str, str] = {}
+    if text_col is not None:
+        news_df["_news_text_len"] = news_df[text_col].astype(str).str.len()
+        agg_spec["_news_text_len"] = "mean"
+    if score_col is not None:
+        news_df["_news_score"] = pd.to_numeric(news_df[score_col], errors="coerce")
+        agg_spec["_news_score"] = "mean"
+
+    daily = news_df.groupby("news_date", as_index=False).agg(agg_spec) if agg_spec else pd.DataFrame()
+    count_df = news_df.groupby("news_date", as_index=False).size().rename(columns={"size": "news_article_count"})
+
+    if daily.empty:
+        daily = count_df
+    else:
+        daily = daily.merge(count_df, on="news_date", how="left")
+
+    rename_map = {
+        "_news_text_len": "news_text_len_mean",
+        "_news_score": "news_score_mean",
+    }
+    daily = daily.rename(columns=rename_map)
+
+    # Ensure deterministic order and daily continuity before creating lagged news features.
+    daily = daily.sort_values("news_date").reset_index(drop=True)
+    full_range = pd.date_range(start=daily["news_date"].min(), end=daily["news_date"].max(), freq="D")
+    daily = daily.set_index("news_date").reindex(full_range).rename_axis("news_date").reset_index()
+
+    base_cols = [c for c in ["news_article_count", "news_text_len_mean", "news_score_mean"] if c in daily.columns]
+    daily[base_cols] = daily[base_cols].fillna(0.0)
+
+    for col in base_cols:
+        daily[f"{col}_lag1"] = daily[col].shift(1)
+        daily[f"{col}_lag3_mean"] = daily[col].shift(1).rolling(window=3).mean()
+        daily[f"{col}_lag7_mean"] = daily[col].shift(1).rolling(window=7).mean()
+
+    lagged_cols = [c for c in daily.columns if c.endswith("_lag1") or c.endswith("_lag3_mean") or c.endswith("_lag7_mean")]
+    daily[lagged_cols] = daily[lagged_cols].fillna(0.0)
+
+    keep_cols = ["news_date"] + lagged_cols
+    return daily[keep_cols]
+
+
 def run_pipeline(
     data_path: Path,
     out_dir: Path,
@@ -76,6 +160,10 @@ def run_pipeline(
     origin_col: str | None,
     dest_col: str | None,
     target_col: str | None,
+    news_path: Path | None,
+    news_date_col: str | None,
+    news_text_col: str | None,
+    news_score_col: str | None,
 ) -> None:
     df = pd.read_csv(data_path, sep="\t")
 
@@ -98,6 +186,20 @@ def run_pipeline(
         "month",
         "is_weekend",
     ]
+
+    if news_path is not None:
+        news_daily = load_news_daily_features(
+            news_path=news_path,
+            news_date_col=news_date_col,
+            news_text_col=news_text_col,
+            news_score_col=news_score_col,
+        )
+        featured["news_date"] = featured[date_col].dt.normalize()
+        featured = featured.merge(news_daily, on="news_date", how="left")
+        news_feature_cols = [c for c in news_daily.columns if c != "news_date"]
+        feature_cols.extend(news_feature_cols)
+        featured[news_feature_cols] = featured[news_feature_cols].fillna(0.0)
+        featured = featured.drop(columns=["news_date"])
 
     modeled = featured.dropna(subset=feature_cols + [target_col]).copy()
     train_df, valid_df = split_train_valid(modeled, date_col)
@@ -128,6 +230,7 @@ def run_pipeline(
         "rows_valid": int(len(valid_df)),
         "mae": mae,
         "rmse": rmse,
+        "used_news_features": bool(news_path is not None),
     }
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
@@ -147,6 +250,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--origin-col", type=str, default=None, help="Origin column name")
     parser.add_argument("--dest-col", type=str, default=None, help="Destination column name")
     parser.add_argument("--target-col", type=str, default=None, help="Flow target column name")
+    parser.add_argument("--news-path", type=Path, default=None, help="Optional path to news CSV/TSV")
+    parser.add_argument("--news-date-col", type=str, default=None, help="News date column name")
+    parser.add_argument("--news-text-col", type=str, default=None, help="News text/title column name")
+    parser.add_argument("--news-score-col", type=str, default=None, help="News score/sentiment column name")
     return parser.parse_args()
 
 
@@ -159,6 +266,10 @@ def main() -> None:
         origin_col=args.origin_col,
         dest_col=args.dest_col,
         target_col=args.target_col,
+        news_path=args.news_path,
+        news_date_col=args.news_date_col,
+        news_text_col=args.news_text_col,
+        news_score_col=args.news_score_col,
     )
 
 
