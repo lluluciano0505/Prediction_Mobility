@@ -120,6 +120,106 @@ python -m src.humob_baseline \
   --out-dir outputs
 ```
 
+7) Build date-cell news embedding features (Model C input)
+
+```bash
+export VECTORENGINE_API_KEY="<your_key>"
+python -m src.news_embedding_features \
+  --news-path /path/to/news.tsv \
+  --out-path outputs/news_embedding_features.csv \
+  --model text-embedding-3-large
+```
+
+Expected output columns include:
+
+- `news_date`
+- `news_cell`
+- `emb_0000 ... emb_N`
+
+8) Train with embedding features merged to origin/destination cells
+
+```bash
+python -m src.humob_baseline \
+  --data-path /path/to/humob2026-dataset.tsv \
+  --news-embedding-path outputs/news_embedding_features.csv \
+  --out-dir outputs/model_c
+```
+
+9) Collect public news and map to grid cells (crawl pipeline)
+
+```bash
+python -m src.news_collect_to_cells \
+  --query "能登 OR 石川 地震 OR 交通 OR 観光" \
+  --max-items 300 \
+  --out-path data/news/news_collected_cells.tsv
+```
+
+This produces a training-ready news file with columns:
+
+- `date`
+- `cell_id`
+- `headline`
+- `text`
+- `source`
+- `url`
+
+10) Build Model C embeddings from crawled news
+
+```bash
+export VECTORENGINE_API_KEY="<your_key>"
+python -m src.news_embedding_features \
+  --news-path data/news/news_collected_cells.tsv \
+  --news-date-col date \
+  --news-text-col text \
+  --news-cell-col cell_id \
+  --out-path outputs/news_embedding_features.csv \
+  --model text-embedding-3-large
+```
+
+11) Staged experiments in your requested order
+
+Model A (baseline only):
+
+```bash
+python -m src.humob_baseline \
+  --data-path data/humob2026-tabular.tsv \
+  --stage baseline \
+  --out-dir outputs/model_a_baseline
+```
+
+Model B (+POI):
+
+```bash
+python -m src.humob_baseline \
+  --data-path data/humob2026-tabular.tsv \
+  --stage poi \
+  --poi-path data/features/grid_static_features.tsv \
+  --out-dir outputs/model_b_poi
+```
+
+Model C (+satellite on top of POI):
+
+```bash
+python -m src.humob_baseline \
+  --data-path data/humob2026-tabular.tsv \
+  --stage satellite \
+  --poi-path data/features/grid_static_features.tsv \
+  --satellite-path data/features/satellite_cloud_nightlight_daily.tsv \
+  --out-dir outputs/model_c_satellite
+```
+
+Model D (+news on top of POI+satellite):
+
+```bash
+python -m src.humob_baseline \
+  --data-path data/humob2026-tabular.tsv \
+  --stage news \
+  --poi-path data/features/grid_static_features.tsv \
+  --satellite-path data/features/satellite_cloud_nightlight_daily.tsv \
+  --news-path data/news/news_collected_cells.tsv \
+  --out-dir outputs/model_d_news
+```
+
 ## Outputs
 
 The pipeline writes:
