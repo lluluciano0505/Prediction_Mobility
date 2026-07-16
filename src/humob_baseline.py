@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
@@ -51,8 +52,17 @@ def build_features(df: pd.DataFrame, date_col: str, origin_col: str, dest_col: s
     df["lag7_std"] = rolling.std().reset_index(level=[0, 1], drop=True)
 
     df["day_of_week"] = df[date_col].dt.dayofweek
+    df["day_of_year"] = df[date_col].dt.dayofyear
     df["month"] = df[date_col].dt.month
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+
+    # Cyclical encoding helps models capture periodic mobility patterns.
+    df["dow_sin"] = np.sin(2.0 * np.pi * df["day_of_week"] / 7.0)
+    df["dow_cos"] = np.cos(2.0 * np.pi * df["day_of_week"] / 7.0)
+    df["month_sin"] = np.sin(2.0 * np.pi * (df["month"] - 1.0) / 12.0)
+    df["month_cos"] = np.cos(2.0 * np.pi * (df["month"] - 1.0) / 12.0)
+    df["doy_sin"] = np.sin(2.0 * np.pi * (df["day_of_year"] - 1.0) / 366.0)
+    df["doy_cos"] = np.cos(2.0 * np.pi * (df["day_of_year"] - 1.0) / 366.0)
 
     return df
 
@@ -156,6 +166,7 @@ def load_news_daily_features(
 def run_pipeline(
     data_path: Path,
     out_dir: Path,
+    model_name: str,
     date_col: str | None,
     origin_col: str | None,
     dest_col: str | None,
@@ -183,8 +194,15 @@ def run_pipeline(
         "lag7_mean",
         "lag7_std",
         "day_of_week",
+        "day_of_year",
         "month",
         "is_weekend",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+        "doy_sin",
+        "doy_cos",
     ]
 
     if news_path is not None:
@@ -209,13 +227,25 @@ def run_pipeline(
     X_valid = valid_df[feature_cols]
     y_valid = valid_df[target_col].astype(float)
 
-    model = RandomForestRegressor(
-        n_estimators=400,
-        max_depth=18,
-        min_samples_leaf=2,
-        random_state=42,
-        n_jobs=-1,
-    )
+    if model_name == "random_forest":
+        model = RandomForestRegressor(
+            n_estimators=400,
+            max_depth=18,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1,
+        )
+    else:
+        model = HistGradientBoostingRegressor(
+            loss="squared_error",
+            learning_rate=0.05,
+            max_iter=450,
+            max_leaf_nodes=63,
+            min_samples_leaf=20,
+            l2_regularization=0.1,
+            random_state=42,
+        )
+
     model.fit(X_train, y_train)
     preds = model.predict(X_valid)
     preds = np.clip(preds, 0.0, None)
@@ -228,6 +258,7 @@ def run_pipeline(
     metrics = {
         "rows_train": int(len(train_df)),
         "rows_valid": int(len(valid_df)),
+        "model": model_name,
         "mae": mae,
         "rmse": rmse,
         "used_news_features": bool(news_path is not None),
@@ -246,6 +277,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HuMob Challenge 2026 baseline pipeline")
     parser.add_argument("--data-path", type=Path, required=True, help="Path to humob2026-dataset.tsv")
     parser.add_argument("--out-dir", type=Path, default=Path("outputs"), help="Directory for outputs")
+    parser.add_argument(
+        "--model",
+        type=str,
+        choices=["hgbt", "random_forest"],
+        default="hgbt",
+        help="Model type. Default 'hgbt' is usually better for periodic patterns.",
+    )
     parser.add_argument("--date-col", type=str, default=None, help="Date column name")
     parser.add_argument("--origin-col", type=str, default=None, help="Origin column name")
     parser.add_argument("--dest-col", type=str, default=None, help="Destination column name")
@@ -262,6 +300,7 @@ def main() -> None:
     run_pipeline(
         data_path=args.data_path,
         out_dir=args.out_dir,
+        model_name=args.model,
         date_col=args.date_col,
         origin_col=args.origin_col,
         dest_col=args.dest_col,

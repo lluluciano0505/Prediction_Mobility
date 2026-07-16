@@ -119,6 +119,18 @@ Prediction_Mobility/
 
 `srai` is the primary recommendation for this project because it is designed to represent spatial units (for example grid/H3 cells) as vectors for downstream prediction tasks.
 
+Reference reading for GIS embedding intuition:
+
+- ArcGIS Blog: An introduction to embeddings for GIS analysts
+  - https://www.esri.com/arcgis-blog/products/arcgis-pro/geoai/an-introduction-to-embeddings-for-gis-analysts
+
+How this concept maps to our OD prediction task:
+
+- Embedding = dense numeric vector that encodes spatial context.
+- For our case, each origin grid and destination grid gets an embedding vector.
+- Similar areas should have similar vectors, so the model can generalize to sparse OD pairs.
+- These vectors are concatenated with lag/calendar/news features before model training.
+
 Integration steps:
 
 1. Define region IDs for origin/destination (existing grid IDs or mapped H3 IDs).

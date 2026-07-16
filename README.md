@@ -69,6 +69,8 @@ python -m src.humob_baseline \
   --out-dir outputs
 ```
 
+Default model is `hgbt` (HistGradientBoostingRegressor), which usually captures periodic patterns better than RandomForest on tabular time features.
+
 3) Optional explicit columns
 
 ```bash
@@ -102,6 +104,22 @@ python -m src.humob_baseline \
   --out-dir outputs
 ```
 
+6) Optional model selection
+
+```bash
+python -m src.humob_baseline \
+  --data-path /path/to/humob2026-dataset.tsv \
+  --model hgbt \
+  --out-dir outputs
+```
+
+```bash
+python -m src.humob_baseline \
+  --data-path /path/to/humob2026-dataset.tsv \
+  --model random_forest \
+  --out-dir outputs
+```
+
 ## Outputs
 
 The pipeline writes:
@@ -115,14 +133,19 @@ The pipeline writes:
 
 - Sort by OD pair and date.
 - Build lag features from prior days within each OD pair.
-- Add simple calendar features (day of week, month, weekend).
-- Train a tree-based regressor (RandomForestRegressor).
+- Add calendar + cyclical periodic features (day/week/month/year seasonality via sin/cos).
+- Train a tree-based regressor (default: HistGradientBoostingRegressor, optional: RandomForestRegressor).
 
 This baseline is intentionally simple and is meant as a starting point.
 
 ## Geography Embedding Recommendation
 
 For this project, `srai` is the best fit among open-source options.
+
+Background reading (GIS perspective):
+
+- ArcGIS Blog: An introduction to embeddings for GIS analysts
+  - https://www.esri.com/arcgis-blog/products/arcgis-pro/geoai/an-introduction-to-embeddings-for-gis-analysts
 
 - Why it fits: `srai` is strong at turning spatial units (for example, grid cells or H3 cells) into vector embeddings, which matches OD flow forecasting well.
 - How to use it here: map both origin and destination grid IDs to embeddings, then combine those embeddings with temporal lag features in the prediction model.
