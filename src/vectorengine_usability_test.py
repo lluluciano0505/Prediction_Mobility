@@ -22,20 +22,47 @@ def pick_column(df: pd.DataFrame, candidates: list[str], label: str) -> str:
     raise ValueError(f"Could not infer {label} column from candidates: {candidates}")
 
 
+def infer_two_col_format(df: pd.DataFrame) -> tuple[str, str] | None:
+    if df.shape[1] < 2:
+        return None
+
+    c0, c1 = df.columns[0], df.columns[1]
+    c0_values = pd.to_datetime(df[c0], errors="coerce")
+    c1_values = df[c1].astype(str)
+    if c0_values.notna().mean() >= 0.8 and c1_values.str.startswith("{").mean() >= 0.8:
+        return c0, c1
+    return None
+
+
 def build_text_rows(df: pd.DataFrame, sample_size: int) -> list[str]:
-    date_col = pick_column(df, DEFAULT_DATE_CANDIDATES, "date")
-    origin_col = pick_column(df, DEFAULT_ORIGIN_CANDIDATES, "origin")
-    dest_col = pick_column(df, DEFAULT_DEST_CANDIDATES, "destination")
-    target_col = pick_column(df, DEFAULT_TARGET_CANDIDATES, "target")
+    try:
+        date_col = pick_column(df, DEFAULT_DATE_CANDIDATES, "date")
+        origin_col = pick_column(df, DEFAULT_ORIGIN_CANDIDATES, "origin")
+        dest_col = pick_column(df, DEFAULT_DEST_CANDIDATES, "destination")
+        target_col = pick_column(df, DEFAULT_TARGET_CANDIDATES, "target")
 
-    sample = df[[date_col, origin_col, dest_col, target_col]].dropna().head(sample_size).copy()
-    sample[date_col] = pd.to_datetime(sample[date_col], errors="coerce")
-    sample = sample.dropna(subset=[date_col])
+        sample = df[[date_col, origin_col, dest_col, target_col]].dropna().head(sample_size).copy()
+        sample[date_col] = pd.to_datetime(sample[date_col], errors="coerce")
+        sample = sample.dropna(subset=[date_col])
 
-    return [
-        f"date={row[date_col].date()} origin={row[origin_col]} destination={row[dest_col]} flow={row[target_col]}"
-        for _, row in sample.iterrows()
-    ]
+        return [
+            f"date={row[date_col].date()} origin={row[origin_col]} destination={row[dest_col]} flow={row[target_col]}"
+            for _, row in sample.iterrows()
+        ]
+    except ValueError:
+        inferred = infer_two_col_format(df)
+        if inferred is None:
+            raise
+
+        date_col, payload_col = inferred
+        sample = df[[date_col, payload_col]].dropna().head(sample_size).copy()
+        sample[date_col] = pd.to_datetime(sample[date_col], errors="coerce")
+        sample = sample.dropna(subset=[date_col])
+
+        return [
+            f"date={row[date_col].date()} od_payload={str(row[payload_col])[:900]}"
+            for _, row in sample.iterrows()
+        ]
 
 
 def run_chat_smoke(client: OpenAI, model: str) -> dict:
